@@ -1,0 +1,273 @@
+diff --git a/components/eamxx/src/share/atm_process/atmosphere_process.cpp b/components/eamxx/src/share/atm_process/atmosphere_process.cpp
+index 9dff908..5179bbb 100644
+--- a/components/eamxx/src/share/atm_process/atmosphere_process.cpp
++++ b/components/eamxx/src/share/atm_process/atmosphere_process.cpp
+@@ -1,4 +1,5 @@
+ #include "share/atm_process/atmosphere_process.hpp"
++#include "share/atm_process/ref_dump.hpp"  // Py-E3SM-EAMxx reference instrumentation
+ #include "share/util/eamxx_timing.hpp"
+ #include "share/property_checks/mass_and_energy_conservation_check.hpp"
+ #include "share/field/field_utils.hpp"
+@@ -140,6 +141,18 @@ void AtmosphereProcess::initialize (const TimeStamp& t0, const RunType run_type)
+ void AtmosphereProcess::run (const double dt) {
+   m_atm_logger->debug("[EAMxx::" + this->name() + "] run...");
+   start_timer (m_timer_prefix + this->name() + "::run");
++
++  // Py-E3SM-EAMxx reference instrumentation: state before pre-condition checks
++  // (which may repair inputs). Step = step number of the first subcycle.
++  const int ref_step_first = m_end_of_step_ts.get_num_steps()+1;
++  const bool ref_chk_on = (type()!=AtmosphereProcessType::Group or
++                           std::getenv("EAMXX_REF_DUMP_PROCS")!=nullptr) and
++                          ref_dump::enabled_for(name(),ref_step_first);
++  if (ref_chk_on)
++    ref_dump::dump(name(),ref_step_first,-1,m_comm.rank(),dt,m_end_of_step_ts,"prechk",
++                   {get_fields_in(),get_fields_out(),get_internal_fields(),
++                    ref_dump::group_members(get_groups_in(),get_groups_out())});
++
+   if (m_params.get("enable_precondition_checks", true)) {
+     // Run 'pre-condition' property checks stored in this AP
+     run_precondition_checks();
+@@ -176,9 +189,24 @@ void AtmosphereProcess::run (const double dt) {
+       print_global_state_hash(name() + "-pre-sc-" + std::to_string(m_subcycle_iter),
+                               m_start_of_step_ts, true);
+ 
++    // Py-E3SM-EAMxx reference instrumentation: dump fields around run_impl
++    const int ref_step = m_end_of_step_ts.get_num_steps();
++    const bool ref_dump_on = (type()!=AtmosphereProcessType::Group or
++                              std::getenv("EAMXX_REF_DUMP_PROCS")!=nullptr) and
++                             ref_dump::enabled_for(name(),ref_step);
++    if (ref_dump_on)
++      ref_dump::dump(name(),ref_step,m_subcycle_iter,m_comm.rank(),dt_sub,m_start_of_step_ts,"pre",
++                     {get_fields_in(),get_fields_out(),get_internal_fields(),
++                      ref_dump::group_members(get_groups_in(),get_groups_out())});
++
+     // Run derived class implementation
+     run_impl(dt_sub);
+ 
++    if (ref_dump_on)
++      ref_dump::dump(name(),ref_step,m_subcycle_iter,m_comm.rank(),dt_sub,m_end_of_step_ts,"post",
++                     {get_fields_in(),get_fields_out(),get_internal_fields(),
++                      ref_dump::group_members(get_groups_in(),get_groups_out())});
++
+     if (m_internal_diagnostics_level > 0)
+       // Print hash of OUTPUTS/INTERNALS after run
+       print_global_state_hash(name() + "-pst-sc-" + std::to_string(m_subcycle_iter),
+@@ -204,6 +232,13 @@ void AtmosphereProcess::run (const double dt) {
+     run_postcondition_checks();
+   }
+ 
++  // Py-E3SM-EAMxx reference instrumentation: state after post-condition checks
++  // (which may repair outputs). Saved under the same step as "prechk".
++  if (ref_chk_on)
++    ref_dump::dump(name(),ref_step_first,-1,m_comm.rank(),dt,m_end_of_step_ts,"postchk",
++                   {get_fields_in(),get_fields_out(),get_internal_fields(),
++                    ref_dump::group_members(get_groups_in(),get_groups_out())});
++
+   if (m_update_time_stamps) {
+     // Update all output fields time stamps
+     update_time_stamps ();
+diff --git a/components/eamxx/src/share/atm_process/ref_dump.hpp b/components/eamxx/src/share/atm_process/ref_dump.hpp
+new file mode 100644
+index 0000000..6a54bb1
+--- /dev/null
++++ b/components/eamxx/src/share/atm_process/ref_dump.hpp
+@@ -0,0 +1,199 @@
++#ifndef EAMXX_REF_DUMP_HPP
++#define EAMXX_REF_DUMP_HPP
++
++// Py-E3SM-EAMxx reference instrumentation (not part of upstream E3SM).
++//
++// Dumps every input, output and internal field of an atmosphere process
++// immediately before and after run_impl(), so that a port can be fed the
++// identical inputs and compared against the identical outputs.
++//
++// Off unless EAMXX_REF_DUMP_DIR is set. Controls (environment variables):
++//   EAMXX_REF_DUMP_DIR    output directory (created if needed)
++//   EAMXX_REF_DUMP_PROCS  comma-separated process names (default: all)
++//   EAMXX_REF_DUMP_STEPS  comma-separated model step numbers, 1-based, as
++//                         counted by the end-of-step time stamp (default: all)
++//   EAMXX_REF_DUMP_NCOLS  number of leading local columns to save (default 4)
++//
++// Two kinds of dumps per call of AtmosphereProcess::run(dt):
++//   s<step>_c<subcycle>_r<rank>_{pre,post}: around each run_impl(dt_sub)
++//   s<step>_c-1_r<rank>_{prechk,postchk}  : before the pre-condition checks and
++//        after the post-condition checks (checks may repair fields). <step> is
++//        the step number of the first subcycle.
++//
++// Format: <dir>/<proc>/s<step>_c<subcycle>_r<rank>_<when>.bin holds the
++// raw float64 values (C order, logical extents only, no padding) of each field
++// back to back; a .json sidecar lists name, grid, dims, shape and byte offset.
++// Integer fields are converted to float64.
++
++#include "share/field/field.hpp"
++#include "share/field/field_group.hpp"
++#include "share/util/eamxx_time_stamp.hpp"
++
++#include <cstdlib>
++#include <fstream>
++#include <list>
++#include <set>
++#include <sstream>
++#include <string>
++#include <vector>
++#include <sys/stat.h>
++
++namespace scream {
++namespace ref_dump {
++
++inline const char* env (const char* name) { return std::getenv(name); }
++
++inline std::set<std::string> split_csv (const char* s) {
++  std::set<std::string> out;
++  if (s==nullptr) return out;
++  std::stringstream ss(s);
++  std::string tok;
++  while (std::getline(ss,tok,',')) if (!tok.empty()) out.insert(tok);
++  return out;
++}
++
++inline bool enabled_for (const std::string& proc, const int step) {
++  const char* dir = env("EAMXX_REF_DUMP_DIR");
++  if (dir==nullptr || dir[0]=='\0') return false;
++  static const auto procs = split_csv(env("EAMXX_REF_DUMP_PROCS"));
++  static const auto steps = split_csv(env("EAMXX_REF_DUMP_STEPS"));
++  if (!procs.empty() && procs.count(proc)==0) return false;
++  if (!steps.empty() && steps.count(std::to_string(step))==0) return false;
++  return true;
++}
++
++inline void mkdirs (const std::string& path) {
++  std::string cur;
++  std::stringstream ss(path);
++  std::string part;
++  if (!path.empty() && path[0]=='/') cur = "/";
++  while (std::getline(ss,part,'/')) {
++    if (part.empty()) continue;
++    cur += part + "/";
++    ::mkdir(cur.c_str(),0755);
++  }
++}
++
++inline std::string json_escape (const std::string& s) {
++  std::string o;
++  for (char c : s) { if (c=='"' || c=='\\') o += '\\'; o += c; }
++  return o;
++}
++
++// Append the logical (unpadded) values of f, restricted to the first ncols
++// columns when the first dimension is the column dimension, to buf.
++inline void append_field (const Field& f, const int ncols_max,
++                          std::vector<double>& buf, std::vector<int>& shape) {
++  const auto& fl = f.get_header().get_identifier().get_layout();
++  const int rank = fl.rank();
++  shape.clear();
++  for (int i=0; i<rank; ++i) shape.push_back(fl.dim(i));
++  const bool has_cols = rank>0 && fl.tag(0)==FieldTag::Column;
++  if (has_cols) shape[0] = std::min(shape[0],ncols_max);
++
++  f.sync_to_host();
++  const bool is_int = f.data_type()==DataType::IntType;
++  auto get = [&](auto view, auto... idx) {
++    return static_cast<double>(view(idx...));
++  };
++  switch (rank) {
++    case 0:
++      if (is_int) buf.push_back(get(f.get_view<const int,Host>()));
++      else        buf.push_back(get(f.get_view<const Real,Host>()));
++      break;
++    case 1: {
++      if (is_int) { auto v = f.get_view<const int*,Host>();
++        for (int i=0;i<shape[0];++i) buf.push_back(v(i)); }
++      else { auto v = f.get_view<const Real*,Host>();
++        for (int i=0;i<shape[0];++i) buf.push_back(v(i)); }
++      break;
++    }
++    case 2: {
++      if (is_int) { auto v = f.get_view<const int**,Host>();
++        for (int i=0;i<shape[0];++i) for (int j=0;j<shape[1];++j) buf.push_back(v(i,j)); }
++      else { auto v = f.get_view<const Real**,Host>();
++        for (int i=0;i<shape[0];++i) for (int j=0;j<shape[1];++j) buf.push_back(v(i,j)); }
++      break;
++    }
++    case 3: {
++      auto v = f.get_view<const Real***,Host>();
++      for (int i=0;i<shape[0];++i) for (int j=0;j<shape[1];++j)
++        for (int k=0;k<shape[2];++k) buf.push_back(v(i,j,k));
++      break;
++    }
++    case 4: {
++      auto v = f.get_view<const Real****,Host>();
++      for (int i=0;i<shape[0];++i) for (int j=0;j<shape[1];++j)
++        for (int k=0;k<shape[2];++k) for (int l=0;l<shape[3];++l) buf.push_back(v(i,j,k,l));
++      break;
++    }
++    default:
++      break;  // not expected for physics fields
++  }
++}
++
++// Individual member fields of the process's input/output field groups
++// (e.g. the "tracers" group that SHOC mixes and HOMME advects).
++inline std::list<Field> group_members (const std::list<FieldGroup>& gin,
++                                       const std::list<FieldGroup>& gout) {
++  std::list<Field> out;
++  for (const auto* gl : {&gin,&gout})
++    for (const auto& g : *gl)
++      for (const auto& it : g.individual_fields())
++        out.push_back(it.second);
++  return out;
++}
++
++inline void dump (const std::string& proc, const int step, const int subcycle,
++                  const int rank, const double dt, const util::TimeStamp& ts,
++                  const std::string& when,
++                  const std::list<std::list<Field>>& field_lists) {
++  const std::string dir = std::string(env("EAMXX_REF_DUMP_DIR")) + "/" + proc;
++  mkdirs(dir);
++  const char* nc = env("EAMXX_REF_DUMP_NCOLS");
++  const int ncols = nc ? std::atoi(nc) : 4;
++
++  std::ostringstream stem;
++  stem << dir << "/s" << step << "_c" << subcycle << "_r" << rank << "_" << when;
++
++  std::vector<double> buf;
++  std::set<std::string> seen;
++  std::ostringstream js;
++  js << "{\"proc\":\"" << json_escape(proc) << "\",\"step\":" << step
++     << ",\"subcycle\":" << subcycle << ",\"rank\":" << rank
++     << ",\"dt\":" << dt << ",\"time\":\"" << ts.to_string() << "\""
++     << ",\"when\":\"" << when << "\",\"fields\":[";
++  bool first = true;
++  for (const auto& lst : field_lists) {
++    for (const auto& f : lst) {
++      const auto& fid = f.get_header().get_identifier();
++      const std::string key = fid.name() + "@" + fid.get_grid_name();
++      if (seen.count(key)) continue;
++      seen.insert(key);
++      std::vector<int> shape;
++      const size_t off = buf.size();
++      append_field(f,ncols,buf,shape);
++      const auto& fl = fid.get_layout();
++      js << (first ? "" : ",") << "{\"name\":\"" << json_escape(fid.name())
++         << "\",\"grid\":\"" << json_escape(fid.get_grid_name())
++         << "\",\"units\":\"" << json_escape(fid.get_units().get_si_string())
++         << "\",\"dims\":[";
++      for (int i=0;i<fl.rank();++i) js << (i?",":"") << "\"" << fl.names()[i] << "\"";
++      js << "],\"shape\":[";
++      for (size_t i=0;i<shape.size();++i) js << (i?",":"") << shape[i];
++      js << "],\"offset\":" << off << ",\"count\":" << (buf.size()-off) << "}";
++      first = false;
++    }
++  }
++  js << "]}";
++
++  std::ofstream bin(stem.str()+".bin",std::ios::binary);
++  bin.write(reinterpret_cast<const char*>(buf.data()),buf.size()*sizeof(double));
++  std::ofstream meta(stem.str()+".json");
++  meta << js.str() << "\n";
++}
++
++} // namespace ref_dump
++} // namespace scream
++
++#endif // EAMXX_REF_DUMP_HPP

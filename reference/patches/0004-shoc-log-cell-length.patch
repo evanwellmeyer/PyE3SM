@@ -1,0 +1,31 @@
+diff --git a/components/eamxx/src/physics/shoc/eamxx_shoc_process_interface.cpp b/components/eamxx/src/physics/shoc/eamxx_shoc_process_interface.cpp
+index 105702c..a2d798a 100644
+--- a/components/eamxx/src/physics/shoc/eamxx_shoc_process_interface.cpp
++++ b/components/eamxx/src/physics/shoc/eamxx_shoc_process_interface.cpp
+@@ -7,6 +7,9 @@
+ #include <ekat_team_policy_utils.hpp>
+ #include <ekat_reduction_utils.hpp>
+ 
++#include <iomanip>
++#include <sstream>
++
+ namespace scream
+ {
+ 
+@@ -534,6 +537,16 @@ void SHOCMacrophysics::initialize_impl (const RunType run_type)
+   }
+   input.dx = cell_length;
+   input.dy = cell_length;
++
++  // Py-E3SM-EAMxx reference instrumentation: log the cell length SHOC uses
++  // (it is grid geometry, not a field, so the field dumps do not contain it).
++  {
++    auto cl_h = Kokkos::create_mirror_view(cell_length);
++    Kokkos::deep_copy(cl_h, cell_length);
++    std::ostringstream ss;
++    ss << std::setprecision(17) << "[ref_dump] shoc cell_length[0] = " << (ncols>0 ? cl_h(0) : -1.0);
++    this->log(LogLevel::info, ss.str());
++  }
+ }
+ 
+ // =========================================================================================

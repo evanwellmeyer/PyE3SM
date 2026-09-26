@@ -1,0 +1,18 @@
+diff --git a/components/eamxx/src/share/util/eamxx_family_tracking.hpp b/components/eamxx/src/share/util/eamxx_family_tracking.hpp
+index 719a092..8b7b8ee 100644
+--- a/components/eamxx/src/share/util/eamxx_family_tracking.hpp
++++ b/components/eamxx/src/share/util/eamxx_family_tracking.hpp
+@@ -154,7 +154,12 @@ template<typename DerivedType>
+ bool FamilyTracking<DerivedType>::
+ is_same (const std::weak_ptr<derived_type>& src) const
+ {
+-  auto me = this->weak_from_this();
++  // Py-E3SM-EAMxx reference patch: call the non-const weak_from_this(), so that
++  // 'me' is a weak_ptr<derived_type>. In a const method, weak_from_this() returns
++  // weak_ptr<const derived_type>; libc++ builds that conversion via lock(), which
++  // yields an EMPTY weak_ptr once the object has expired (i.e., inside the dtor),
++  // and the owner_before comparison then fails. libstdc++ keeps the control block.
++  auto me = const_cast<FamilyTracking*>(this)->weak_from_this();
+   return not src.owner_before(me) and not me.owner_before(src);
+ }
+ 

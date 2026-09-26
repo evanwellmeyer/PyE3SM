@@ -1,0 +1,11 @@
+# Project environment (the PyTorch port). Use conda-forge pytorch so that numpy
+# and torch share one OpenMP runtime (pip torch + conda numpy aborts on macOS).
+name: eamxx-torch
+channels: [conda-forge]
+dependencies:
+  - python=3.11
+  - pytorch
+  - numpy
+  - pytest
+  - netcdf4
+  - pip

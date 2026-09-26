@@ -1,0 +1,15 @@
+diff --git a/components/eamxx/tests/multi-process/CMakeLists.txt b/components/eamxx/tests/multi-process/CMakeLists.txt
+index 827a616..64dc56c 100644
+--- a/components/eamxx/tests/multi-process/CMakeLists.txt
++++ b/components/eamxx/tests/multi-process/CMakeLists.txt
+@@ -2,3 +2,10 @@ add_subdirectory(physics_only)
+ if (NOT "${SCREAM_DYNAMICS_DYCORE}" STREQUAL "NONE")
+   add_subdirectory(dynamics_physics)
+ endif()
++
++# Py-E3SM-EAMxx reference hook: extra out-of-tree driver targets, in any precision and
++# with or without a dycore (targets that need HOMME check for it themselves). The build
++# path is the one the hook had inside dynamics_physics, so existing paths stay valid.
++if (EAMXX_REF_EXTRA_DIR)
++  add_subdirectory(${EAMXX_REF_EXTRA_DIR} ${CMAKE_CURRENT_BINARY_DIR}/dynamics_physics/ref_extra)
++endif()

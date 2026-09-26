@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eamxx-torch"
+version = "0.0.1"
+description = "Line-by-line PyTorch port of the E3SM EAMxx physics suite, validated against the running EAMxx reference"
+readme = "README.md"
+license = { text = "BSD-3-Clause" }
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "torch>=2.2",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+io = ["netCDF4>=1.6"]
+dev = ["eamxx-torch[test,io]"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["eamxx_torch*"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers"
+testpaths = ["tests"]
+markers = [
+    "reference: replays saved EAMxx reference data (skipped if data absent)",
+]

@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+
+# Reference: upstream clones, builds, input data, and bulky run output
+reference/E3SM/
+reference/scmlib/
+reference/build/
+reference/inputdata/
+reference/runs/
+# Large saved reference data (small replay fixtures live in tests/data)
+reference/data/**/*.nc
+reference/data/**/*.npz
+!reference/data/README.md
+
+.DS_Store

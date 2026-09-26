@@ -1,0 +1,25 @@
+# Toolchain for building the EAMxx reference (standalone, no CIME) on macOS arm64.
+# Created with:  conda create -p ~/miniconda3/envs/eamxx-ref -c conda-forge ...
+name: eamxx-ref
+channels: [conda-forge]
+dependencies:
+  - python=3.11
+  - cmake
+  - make
+  - c-compiler
+  - cxx-compiler
+  - fortran-compiler
+  - openmpi
+  - libnetcdf=*=mpi_openmpi*
+  - netcdf-fortran=*=mpi_openmpi*
+  - hdf5=*=mpi_openmpi*
+  - libblas
+  - liblapack
+  - perl
+  - numpy
+  - netcdf4
+  - pyyaml
+  - psutil
+  - nanobind
+  - mpi4py
+  - packaging
